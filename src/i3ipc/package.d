@@ -262,7 +262,7 @@ struct Container
 
 	string toString()
 	{
-		return "%s %s \"%s\" %s %s %s %s %s %s %s %s %s %s %s [%s]".format(
+		return "Container(%s %s \"%s\" %s %s %s %s %s %s %s %s %s %s %s [%s])".format(
 			id,
 			type,
 			name,
@@ -299,30 +299,29 @@ struct BarConfig
 		Top
 	}
 
-	Tuple!(
-		Nullable!string, "background",
-		Nullable!string, "statusline",
-		Nullable!string, "separator",
+	private enum ConfigurableColors = [
+		"background",
+		"statusline",
+		"separator",
+		"focused_workspace_text",
+		"focused_workspace_bg",
+		"focused_workspace_border",
+		"active_workspace_text",
+		"active_workspace_bg",
+		"active_workspace_border",
+		"inactive_workspace_text",
+		"inactive_workspace_bg",
+		"inactive_workspace_border",
+		"urgent_workspace_text",
+		"urgent_workspace_bg",
+		"urgent_workspace_border",
+		"binding_mode_text",
+		"binding_mode_bg",
+		"binding_mode_border"];
 
-		Nullable!string, "focused_workspace_text",
-		Nullable!string, "focused_workspace_bg",
-		Nullable!string, "focused_workspace_border",
-
-		Nullable!string, "active_workspace_text",
-		Nullable!string, "active_workspace_bg",
-		Nullable!string, "active_workspace_border",
-
-		Nullable!string, "inactive_workspace_text",
-		Nullable!string, "inactive_workspace_bg",
-		Nullable!string, "inactive_workspace_border",
-
-		Nullable!string, "urgent_workspace_text",
-		Nullable!string, "urgent_workspace_bg",
-		Nullable!string, "urgent_workspace_border",
-
-		Nullable!string, "binding_mode_text",
-		Nullable!string, "binding_mode_bg",
-		Nullable!string, "binding_mode_border") colors;
+	mixin("Tuple!("
+		~ ConfigurableColors.map!((string x) => "Nullable!string, \"%s\"".format(x)).joiner(",").array
+		~ ") colors;");
 
 	this(JSONValue json)
 	{
@@ -345,29 +344,20 @@ struct BarConfig
 		verbose = JSON_TYPE.TRUE == json["verbose"].type;
 
 		auto colors_json = json["colors"];
-		if ("background" in colors_json) colors.background = colors_json["background"].str;
-		if ("statusline" in colors_json) colors.statusline = colors_json["statusline"].str;
-		if ("separator" in colors_json) colors.separator = colors_json["separator"].str;
+		mixin(ConfigurableColors.map!(x => "if (\"%1$s\" in colors_json) colors.%1$s = colors_json[\"%1$s\"].str;\n".format(x)).joiner.array);
+	}
 
-		if ("focused_workspace_text" in colors_json) colors.focused_workspace_text = colors_json["focused_workspace_text"].str;
-		if ("focused_workspace_bg" in colors_json) colors.focused_workspace_bg = colors_json["focused_workspace_bg"].str;
-		if ("focused_workspace_border" in colors_json) colors.focused_workspace_border = colors_json["focused_workspace_border"].str;
-
-		if ("active_workspace_text" in colors_json) colors.active_workspace_text = colors_json["active_workspace_text"].str;
-		if ("active_workspace_bg" in colors_json) colors.active_workspace_bg = colors_json["active_workspace_bg"].str;
-		if ("active_workspace_border" in colors_json) colors.active_workspace_border = colors_json["active_workspace_border"].str;
-
-		if ("inactive_workspace_text" in colors_json) colors.inactive_workspace_text = colors_json["inactive_workspace_text"].str;
-		if ("inactive_workspace_bg" in colors_json) colors.inactive_workspace_bg = colors_json["inactive_workspace_bg"].str;
-		if ("inactive_workspace_border" in colors_json) colors.inactive_workspace_border = colors_json["inactive_workspace_border"].str;
-
-		if ("urgent_workspace_text" in colors_json) colors.urgent_workspace_text = colors_json["urgent_workspace_text"].str;
-		if ("urgent_workspace_bg" in colors_json) colors.urgent_workspace_bg = colors_json["urgent_workspace_bg"].str;
-		if ("urgent_workspace_border" in colors_json) colors.urgent_workspace_border = colors_json["urgent_workspace_border"].str;
-
-		if ("binding_mode_text" in colors_json) colors.binding_mode_text = colors_json["binding_mode_text"].str;
-		if ("binding_mode_bg" in colors_json) colors.binding_mode_bg = colors_json["binding_mode_bg"].str;
-		if ("binding_mode_border" in colors_json) colors.binding_mode_border = colors_json["binding_mode_border"].str;
+	string toString()
+	{
+		import std.range : repeat;
+		mixin(
+			"return \"BarConfig(" ~ "%s".repeat(26).joiner(" ").array ~ ")\".format(
+				id, status_command, font,
+				mode,
+				position,
+				workspace_buttons, binding_mode_indicator, verbose,"
+			~ ConfigurableColors.map!(x => "colors.%s".format(x)).joiner(",\n").array
+			~ ");");
 	}
 }
 
