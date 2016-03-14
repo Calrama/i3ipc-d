@@ -1,6 +1,8 @@
 
 module i3ipc;
 
+import core.thread : Fiber, Thread, dur;
+
 import std.format : format;
 
 import std.process : execute;
@@ -9,11 +11,9 @@ import std.json : JSONValue, JSON_TYPE, parseJSON;
 import std.exception : enforce;
 import std.algorithm : map, joiner, each;
 import std.array : array;
-import std.socket : Socket, UnixAddress, SocketException;
+import std.socket : Socket, UnixAddress, SocketException, wouldHaveBlocked;
 import std.typecons : Nullable, Tuple;
 import std.conv : to;
-
-import std.stdio : writeln;
 
 align(1) struct Header
 {
@@ -500,16 +500,127 @@ template EventCallback(alias T) if (T == EventType.BarConfigUpdate)
 template EventCallback(alias T) if (T == EventType.Binding)
 { alias EventCallback = void delegate(BindingChange, Binding); }
 
-import core.thread;
-class EventListener : Thread
+struct Connection
 {
+private:
+	import core.sync.mutex : Mutex;
+	import std.variant : Variant;
 
+	import std.typecons : RefCounted, RefCountedAutoInitialize;
+	import std.socket : AddressFamily, SocketType;
+
+	Fiber eventFiber;
+	Mutex mutex;
+
+	struct _Payload
+	{
+		Socket requestSocket, eventSocket;
+
+		shared (Variant[][EventType]) eventCallbacks;
+
+		~this()
+		{
+			requestSocket.close;
+			eventSocket.close;
+		}
+
+		@disable this(this);
+		void opAssign(_Payload) { assert(false); }
+	}
+	alias Payload = RefCounted!(_Payload, RefCountedAutoInitialize.no);
+	Payload p;
+
+	this(UnixAddress address)
+	{
+		mutex = new Mutex();
+
+		auto requestSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
+		requestSocket.connect(address);
+
+		auto eventSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
+		eventSocket.blocking = false;
+		eventSocket.connect(address);
+
+		p = Payload(requestSocket, eventSocket);
+
+		eventFiber = new EventListener(this);
+	}
+
+	JSONValue request(RequestType type, immutable(void)[] message = [])
+	{
+		i3ipc.send(p.requestSocket, type, message);
+
+		auto responseHeader = i3ipc.receive!Header(p.requestSocket);
+		auto response = i3ipc.fill(p.requestSocket, new ubyte[responseHeader.size]);
+
+		enforce(reponseTypes[type] == responseHeader.type);
+		return parseJSON(response);
+	}
+
+public:
+
+	void spin()
+	{
+		eventFiber.call();
+	}
+
+	auto execute(string command)
+	{
+		return map!(json => CommandStatus(json))(request(RequestType.Command, command).array);
+	}
+
+	auto workspaces() @property
+	{
+		return map!(json => Workspace(json))(request(RequestType.GetWorkspaces).array);
+	}
+
+	void subscribe(alias T) (EventCallback!T callback)
+		if (is(typeof(T) == EventType))
+	{
+		synchronized (mutex) {
+			if (T !in p.eventCallbacks) i3ipc.send(p.eventSocket, RequestType.Subscribe, JSONValue([T.toString]).toString);
+			p.eventCallbacks[T] ~= cast(shared(Variant[])) [Variant(callback)];
+		}
+	}
+
+	auto outputs() @property
+	{
+		return map!(json => Output(json))(request(RequestType.GetOutputs).array);
+	}
+
+	Container tree() @property
+	{
+		return Container(request(RequestType.GetTree));
+	}
+
+	auto marks() @property
+	{
+		return map!(json => json.str)(request(RequestType.GetMarks).array);
+	}
+
+	auto configuredBars() @property
+	{
+		return map!(json => json.str)(request(RequestType.GetBarConfig).array);
+	}
+
+	auto getBarConfig(string id)
+	{
+		return BarConfig(request(RequestType.GetBarConfig, id));
+	}
+
+	Version version_() @property
+	{
+		return Version(request(RequestType.GetVersion));
+	}
+}
+
+class EventListener : Fiber
+{
 	import std.variant : Variant;
 
 	this(Connection connection) {
 		super(&run);
 		this.connection = connection;
-		isDaemon = true;
 	}
 
 private:
@@ -520,7 +631,9 @@ private:
 		while (true) {
 			auto header = i3ipc.receive!Header(connection.p.eventSocket);
 			auto json = parseJSON(i3ipc.fill(connection.p.eventSocket, new ubyte[header.size]));
-			if (header.type == ResponseType.Subscribe) continue;
+			if (ResponseType.Subscribe == header.type) {
+				continue;
+			}
 			auto type = cast(EventType) header.type;
 			switch (type) {
 				case EventType.Workspace:
@@ -583,131 +696,7 @@ private:
 	}
 }
 
-struct Connection
-{
 private:
-	import core.sync.mutex : Mutex;
-	import core.thread;
-	import std.variant : Variant;
-
-	import std.typecons : RefCounted, RefCountedAutoInitialize;
-	import std.socket : AddressFamily, SocketType;
-
-	Thread eventThread;
-	Mutex mutex;
-
-	struct _Payload
-	{
-		Socket requestSocket, eventSocket;
-		
-		shared (Variant[][EventType]) eventCallbacks;
-
-		~this()
-		{
-			requestSocket.close;
-			eventSocket.close;
-		}
-
-		@disable this(this);
-		void opAssign(_Payload) { assert(false); }
-	}
-	alias Payload = RefCounted!(_Payload, RefCountedAutoInitialize.no);
-	Payload p;
-
-	this(UnixAddress address)
-	{
-		mutex = new Mutex();
-
-		auto requestSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
-		requestSocket.connect(address);
-
-		auto eventSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
-		eventSocket.connect(address);
-
-		p = Payload(requestSocket, eventSocket);
-
-		eventThread = new EventListener(this).start();
-	}
-
-	JSONValue request(RequestType type, immutable(void)[] message = [])
-	{
-		i3ipc.send(p.requestSocket, type, message);
-
-		auto responseHeader = i3ipc.receive!Header(p.requestSocket);
-		auto response = i3ipc.fill(p.requestSocket, new ubyte[responseHeader.size]);
-		
-		enforce(reponseTypes[type] == responseHeader.type);
-		return parseJSON(response);
-	}
-
-public:
-
-	auto execute(string command)
-	{
-		return map!(json => CommandStatus(json))(request(RequestType.Command, command).array);
-	}
-
-	auto workspaces() @property
-	{
-		return map!(json => Workspace(json))(request(RequestType.GetWorkspaces).array);
-	}
-
-	void subscribe(alias T) (EventCallback!T callback)
-		if (is(typeof(T) == EventType))
-	{
-		synchronized (mutex) {
-			if (T !in p.eventCallbacks) i3ipc.send(p.eventSocket, RequestType.Subscribe, JSONValue([T.toString]).toString);
-			p.eventCallbacks[T] ~= cast(shared(Variant[])) [Variant(callback)];
-		}
-	}
-
-	auto outputs() @property
-	{
-		return map!(json => Output(json))(request(RequestType.GetOutputs).array);
-	}
-
-	Container tree() @property
-	{
-		return Container(request(RequestType.GetTree));
-	}
-
-	auto marks() @property
-	{
-		return map!(json => json.str)(request(RequestType.GetMarks).array);
-	}
-
-	auto configuredBars() @property
-	{
-		return map!(json => json.str)(request(RequestType.GetBarConfig).array);
-	}
-
-	auto getBarConfig(string id)
-	{
-		return BarConfig(request(RequestType.GetBarConfig, id));
-	}
-
-	Version version_() @property
-	{
-		return Version(request(RequestType.GetVersion));
-	}
-}
-
-private:
-	
-	T receive(T)(Socket socket)
-	{
-		ptrdiff_t position = 0;
-		ptrdiff_t amountRead = 0;
-		ubyte[T.sizeof] buffer;
-
-		while (position < buffer.length) {
-			amountRead = socket.receive(buffer[position .. $]);
-			enforce!SocketException(0 != amountRead, "Socket closed");
-			position += amountRead;
-		}
-
-		return *(cast (T*) buffer);
-	}
 
 	ubyte[] fill(Socket socket, ubyte[] buffer)
 	{
@@ -716,11 +705,27 @@ private:
 
 		while (position < buffer.length) {
 			amountRead = socket.receive(buffer[position .. $]);
-			enforce!SocketException(0 != amountRead, "Socket closed");
-			position += amountRead;
+			enforce!SocketException(0 != amountRead, "Socket prematurely closed by remote");
+			if (Socket.ERROR == amountRead) {
+				enforce!SocketException(wouldHaveBlocked, socket.getErrorText);
+				if (Fiber.getThis !is null) {
+					Fiber.yield;
+				} else {
+					Thread.sleep(dur!("msecs")(100));
+				}
+			} else {
+				position += amountRead;
+			}
 		}
 
 		return buffer;
+	}
+
+	T receive(T)(Socket socket)
+	{
+		ubyte[T.sizeof] buffer;
+		i3ipc.fill(socket, buffer);
+		return *(cast (T*) buffer);
 	}
 
 	void send(Socket socket, RequestType type, immutable(void)[] message = [])
