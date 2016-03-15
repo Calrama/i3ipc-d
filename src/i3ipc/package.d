@@ -1,6 +1,7 @@
 
 module i3ipc;
 
+import core.time : Duration;
 import core.thread : Fiber, Thread, dur;
 
 import std.format : format;
@@ -14,85 +15,9 @@ import std.array : array;
 import std.socket : Socket, UnixAddress, SocketException, wouldHaveBlocked;
 import std.typecons : Nullable, Tuple;
 import std.conv : to;
+import std.traits : EnumMembers;
 
-align(1) struct Header
-{
-	align (1):
-    char[6] magic = Magic; /* 6 = strlen(Magic) */
-    uint size;
-    uint type;
-
-    this(uint size, uint type)
-    {
-    	this.size = size;
-    	this.type = type;
-    }
-}
-
-/** Never change this, only on major IPC breakage (don’t do that) */
-enum Magic = "i3-ipc";
-
-enum RequestType : uint
-{
-	Command = 0,
-	GetWorkspaces,
-	Subscribe,
-	GetOutputs,
-	GetTree,
-	GetMarks,
-	GetBarConfig,
-	GetVersion
-}
-
-enum ResponseType : uint
-{
-	Command = 0,
-	Workspaces,
-	Subscribe,
-	Outputs,
-	Tree,
-	Marks,
-	BarConfig,
-	Version
-}
-
-enum reponseTypes = [
-	RequestType.Command : ResponseType.Command,
-	RequestType.GetWorkspaces : ResponseType.Workspaces,
-	RequestType.Subscribe : ResponseType.Subscribe,
-	RequestType.GetOutputs : ResponseType.Outputs,
-	RequestType.GetTree : ResponseType.Tree,
-	RequestType.GetMarks : ResponseType.Marks,
-	RequestType.GetBarConfig : ResponseType.BarConfig,
-	RequestType.GetVersion : ResponseType.Version
-];
-
-enum EventMask = (1 << 31);
-
-enum EventType : uint
-{
-	Workspace       = (EventMask | 0),
-	Output          = (EventMask | 1),
-	Mode            = (EventMask | 2),
-	Window          = (EventMask | 3),
-	BarConfigUpdate = (EventMask | 4),
-	Binding         = (EventMask | 5)
-}
-
-string toString(EventType type)
-{
-	switch (type) {
-		case EventType.Workspace: return "workspace"; break;
-		case EventType.Output: return "output"; break;
-		case EventType.Mode: return "mode"; break;
-		case EventType.Window: return "window"; break;
-		case EventType.BarConfigUpdate: return "barconfig_update"; break;
-		case EventType.Binding: return "binding"; break;
-		default: assert(0);
-	}
-}
-
-/+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++/
+import i3ipc.protocol;
 
 Connection connect()
 {
@@ -548,12 +473,13 @@ private:
 
 	JSONValue request(RequestType type, immutable(void)[] message = [])
 	{
-		i3ipc.send(p.requestSocket, type, message);
+		p.requestSocket.sendMessage(type, message);
 
-		auto responseHeader = i3ipc.receive!Header(p.requestSocket);
-		auto response = i3ipc.fill(p.requestSocket, new ubyte[responseHeader.size]);
+		auto responseHeader = p.requestSocket.receiveExactly!Header;
+		auto response = p.requestSocket.receiveExactly(new ubyte[responseHeader.size]);
 
-		enforce(reponseTypes[type] == responseHeader.type);
+		// This is valid only because corresponding request and response types match uint values
+		enforce(type == responseHeader.responseType);
 		return parseJSON(response);
 	}
 
@@ -574,14 +500,18 @@ public:
 		return map!(json => Workspace(json))(request(RequestType.GetWorkspaces).array);
 	}
 
-	void subscribe(alias T) (EventCallback!T callback)
-		if (is(typeof(T) == EventType))
-	{
-		synchronized (mutex) {
-			if (T !in p.eventCallbacks) i3ipc.send(p.eventSocket, RequestType.Subscribe, JSONValue([T.toString]).toString);
-			p.eventCallbacks[T] ~= cast(shared(Variant[])) [Variant(callback)];
-		}
-	}
+	mixin((cast(EventType[]) [ EnumMembers!EventType ])
+		.map!((EventType eventType) => ("
+			void subscribe(string eventType)(EventCallback!(EventType.%1$s) callback)
+				if (\"%1$s\" == eventType)
+			{
+				synchronized (mutex) {
+					if (EventType.%1$s !in p.eventCallbacks) {
+						p.eventSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
+					}
+					p.eventCallbacks[EventType.%1$s] ~= cast(shared(Variant[])) [Variant(callback)];
+				}
+			}").format(eventType)).joiner.array);
 
 	auto outputs() @property
 	{
@@ -629,13 +559,12 @@ private:
 	void run()
 	{
 		while (true) {
-			auto header = i3ipc.receive!Header(connection.p.eventSocket);
-			auto json = parseJSON(i3ipc.fill(connection.p.eventSocket, new ubyte[header.size]));
-			if (ResponseType.Subscribe == header.type) {
+			auto header = connection.p.eventSocket.receiveExactly!Header;
+			auto json = parseJSON(connection.p.eventSocket.receiveExactly(new ubyte[header.size]));
+			if (ResponseType.Subscribe == header.responseType) {
 				continue;
 			}
-			auto type = cast(EventType) header.type;
-			switch (type) {
+			switch (header.eventType) {
 				case EventType.Workspace:
 					auto change = fromJSON!WorkspaceChange(json["change"]);
 					auto current = Container(json["current"]);
@@ -698,20 +627,20 @@ private:
 
 private:
 
-	ubyte[] fill(Socket socket, ubyte[] buffer)
+	ubyte[] receiveExactly(Socket socket, ubyte[] buffer, Duration spinDelay = dur!"msecs"(100))
 	{
 		ptrdiff_t position = 0;
 		ptrdiff_t amountRead = 0;
 
 		while (position < buffer.length) {
 			amountRead = socket.receive(buffer[position .. $]);
-			enforce!SocketException(0 != amountRead, "Socket prematurely closed by remote");
+			enforce!SocketException(0 != amountRead, "Remote closed socket prematurely");
 			if (Socket.ERROR == amountRead) {
 				enforce!SocketException(wouldHaveBlocked, socket.getErrorText);
 				if (Fiber.getThis !is null) {
 					Fiber.yield;
 				} else {
-					Thread.sleep(dur!("msecs")(100));
+					Thread.sleep(spinDelay);
 				}
 			} else {
 				position += amountRead;
@@ -721,16 +650,18 @@ private:
 		return buffer;
 	}
 
-	T receive(T)(Socket socket)
+	T receiveExactly(T)(Socket socket)
+		if (is(T == struct))
 	{
 		ubyte[T.sizeof] buffer;
-		i3ipc.fill(socket, buffer);
-		return *(cast (T*) buffer);
+		return *(cast (T*) socket.receiveExactly(buffer));
 	}
 
-	void send(Socket socket, RequestType type, immutable(void)[] message = [])
+	void sendMessage(Socket socket, RequestType type, immutable(void)[] message = [])
 	{
-		auto header = Header(to!uint(message.length), type);
+		Header header;
+		header.size = to!uint(message.length);
+		header.requestType = type;
 		socket.send((cast(void*) &header)[0 .. Header.sizeof]);
 		if (message.length) socket.send(message);
 	}
