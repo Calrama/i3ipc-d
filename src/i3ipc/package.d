@@ -1,26 +1,24 @@
 
 module i3ipc;
 
-import core.time : Duration;
-import core.thread : Fiber, Thread, dur;
-
 import std.format : format;
 
-import std.process : execute;
 import std.json : JSONValue, JSON_TYPE, parseJSON;
 
 import std.exception : enforce;
 import std.algorithm : map, joiner, each;
 import std.array : array;
-import std.socket : Socket, UnixAddress, SocketException, wouldHaveBlocked;
+import std.socket : Socket, UnixAddress;
 import std.typecons : Nullable, Tuple;
-import std.conv : to;
 import std.traits : EnumMembers;
 
 import i3ipc.protocol;
+import i3ipc.socket;
 
 Connection connect()
 {
+	import std.process : execute;
+
 	auto result = execute(["i3", "--get-socketpath"]);
 	enforce(0 == result.status);
 	return Connection(new UnixAddress(result.output[0 .. $-1]));
@@ -624,44 +622,3 @@ private:
 		}
 	}
 }
-
-private:
-
-	ubyte[] receiveExactly(Socket socket, ubyte[] buffer, Duration spinDelay = dur!"msecs"(100))
-	{
-		ptrdiff_t position = 0;
-		ptrdiff_t amountRead = 0;
-
-		while (position < buffer.length) {
-			amountRead = socket.receive(buffer[position .. $]);
-			enforce!SocketException(0 != amountRead, "Remote closed socket prematurely");
-			if (Socket.ERROR == amountRead) {
-				enforce!SocketException(wouldHaveBlocked, socket.getErrorText);
-				if (Fiber.getThis !is null) {
-					Fiber.yield;
-				} else {
-					Thread.sleep(spinDelay);
-				}
-			} else {
-				position += amountRead;
-			}
-		}
-
-		return buffer;
-	}
-
-	T receiveExactly(T)(Socket socket)
-		if (is(T == struct))
-	{
-		ubyte[T.sizeof] buffer;
-		return *(cast (T*) socket.receiveExactly(buffer));
-	}
-
-	void sendMessage(Socket socket, RequestType type, immutable(void)[] message = [])
-	{
-		Header header;
-		header.size = to!uint(message.length);
-		header.requestType = type;
-		socket.send((cast(void*) &header)[0 .. Header.sizeof]);
-		if (message.length) socket.send(message);
-	}

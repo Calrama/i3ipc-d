@@ -1,6 +1,9 @@
 
 module i3ipc.protocol;
 
+import std.socket : Socket;
+import std.conv : to;
+
 align(1) struct Header
 {
 	align (1):
@@ -61,4 +64,13 @@ string toString(EventType type)
 		case EventType.Binding: return "binding"; break;
 		default: assert(0);
 	}
+}
+
+void sendMessage(Socket socket, RequestType type, immutable(void)[] message = [])
+{
+    Header header;
+    header.size = to!uint(message.length);
+    header.requestType = type;
+    socket.send((cast(void*) &header)[0 .. Header.sizeof]);
+    if (message.length) socket.send(message);
 }
