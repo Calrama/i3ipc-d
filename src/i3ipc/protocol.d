@@ -9,7 +9,7 @@ align(1) struct Header
 	align (1):
 	/** Never change this, only on major IPC breakage (don’t do that) */
     char[6] magic = "i3-ipc";
-    uint size;
+    uint payloadSize;
 	union
 	{
 		RequestType requestType;
@@ -69,7 +69,7 @@ string toString(EventType type)
 void sendMessage(Socket socket, RequestType type, immutable(void)[] message = [])
 {
     Header header;
-    header.size = to!uint(message.length);
+    header.payloadSize = to!uint(message.length);
     header.requestType = type;
     socket.send((cast(void*) &header)[0 .. Header.sizeof]);
     if (message.length) socket.send(message);

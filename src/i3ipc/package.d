@@ -32,14 +32,16 @@ Connection connect(UnixAddress address)
 struct Rectangle
 {
 	long x, y, width, height;
+}
 
-	this(JSONValue json)
-	{
-		x = json["x"].integer;
-		y = json["y"].integer;
-		width = json["width"].integer;
-		height = json["height"].integer;
-	}
+T fromJSON(T)(JSONValue v) if (is(T == Rectangle))
+{
+	return Rectangle(
+		v["x"].integer,
+		v["y"].integer,
+		v["width"].integer,
+		v["height"].integer,
+	);
 }
 
 struct CommandStatus
@@ -47,16 +49,18 @@ struct CommandStatus
 	bool success;
 	Nullable!string error;
 
-	this(JSONValue json)
-	{
-		success = JSON_TYPE.TRUE == json["success"].type;
-		if ("error" in json) error = json["error"].str;
-	}
-
 	string toString()
 	{
 		return "CommandStatus(%s, \"%s\")".format(success, error);
 	}
+}
+
+T fromJSON(T)(JSONValue v) if (is(T == CommandStatus))
+{
+	return CommandStatus(
+		JSON_TYPE.TRUE == v["success"].type,
+		"error" in v ? Nullable!string(v["error"].str) : Nullable!string.init
+	);
 }
 
 struct Workspace
@@ -66,17 +70,19 @@ struct Workspace
 	bool visible, focused, urgent;
 	Rectangle rect;
 	string output;
+}
 
-	this(JSONValue json)
-	{
-		num = json["num"].integer;
-		name = json["name"].str;
-		urgent = JSON_TYPE.TRUE == json["visible"].type;
-		visible = JSON_TYPE.TRUE == json["focused"].type;
-		focused = JSON_TYPE.TRUE == json["urgent"].type;
-		rect = Rectangle(json["rect"]);
-		output = json["output"].str;
-	}
+T fromJSON(T)(JSONValue v) if (is(T == Workspace))
+{
+	return Workspace(
+		v["num"].integer,
+		v["name"].str,
+		JSON_TYPE.TRUE == v["visible"].type,
+		JSON_TYPE.TRUE == v["focused"].type,
+		JSON_TYPE.TRUE == v["urgent"].type,
+		fromJSON!Rectangle(v["rect"]),
+		v["output"].str,
+	);
 }
 
 struct Output
@@ -86,18 +92,20 @@ struct Output
 	Nullable!string current_workspace;
 	Rectangle rect;
 
-	this(JSONValue json)
-	{
-		name = json["name"].str;
-		active = JSON_TYPE.TRUE == json["active"].type;
-		if (!json["current_workspace"].isNull) current_workspace = json["current_workspace"].str;
-		rect = Rectangle(json["rect"]);
-	}
-
 	string toString()
 	{
 		return "Output(\"%s\", %s, \"%s\", %s)".format(name, active, current_workspace, rect);
 	}
+}
+
+T fromJSON(T)(JSONValue v) if (is(T == Output))
+{
+	return Output(
+		v["name"].str,
+		JSON_TYPE.TRUE == v["active"].type,
+		v["current_workspace"].isNull ? Nullable!string.init : Nullable!string(v["current_workspace"].str),
+		fromJSON!Rectangle(v["rect"])
+	);
 }
 
 struct Container
@@ -145,10 +153,10 @@ struct Container
 			default: assert(0);
 		}
 		if (!json["percent"].isNull) percent = Nullable!double(json["percent"].floating);
-		rect = Rectangle(json["rect"]);
-		window_rect = Rectangle(json["window_rect"]);
-		deco_rect = Rectangle(json["deco_rect"]);
-		geometry = Rectangle(json["geometry"]);
+		rect = fromJSON!Rectangle(json["rect"]);
+		window_rect = fromJSON!Rectangle(json["window_rect"]);
+		deco_rect = fromJSON!Rectangle(json["deco_rect"]);
+		geometry = fromJSON!Rectangle(json["geometry"]);
 		if (!json["window"].isNull) window = Nullable!long(json["window"].integer);
 		urgent = JSON_TYPE.TRUE == json["urgent"].type;
 		focused = JSON_TYPE.TRUE == json["focused"].type;
@@ -288,15 +296,17 @@ struct Version
 {
 	long major, minor, patch;
 	string human_readable, loaded_config_file_name;
+}
 
-	this(JSONValue json)
-	{
-		major = json["major"].integer;
-		minor = json["minor"].integer;
-		patch = json["patch"].integer;
-		human_readable = json["human_readable"].str;
-		loaded_config_file_name = json["loaded_config_file_name"].str;
-	}
+T fromJSON(T)(JSONValue v) if (is(T == Version))
+{
+	return Version(
+		v["major"].integer,
+		v["minor"].integer,
+		v["patch"].integer,
+		v["human_readable"].str,
+		v["loaded_config_file_name"].str
+	);
 }
 
 enum WorkspaceChange
@@ -307,9 +317,9 @@ enum WorkspaceChange
 	Urgent
 }
 
-T fromJSON(T)(JSONValue json) if (is(T == WorkspaceChange))
+T fromJSON(T)(JSONValue v) if (is(T == WorkspaceChange))
 {
-	switch (json.str) {
+	switch (v.str) {
 		case "focus": return WorkspaceChange.Focus;
 		case "init": return WorkspaceChange.Init;
 		case "empty": return WorkspaceChange.Empty;
@@ -323,10 +333,10 @@ enum OutputChange
 	Unspecified
 }
 
-T fromJSON(T)(JSONValue json) if (is(T == OutputChange))
+T fromJSON(T)(JSONValue v) if (is(T == OutputChange))
 
 {
-	switch (json.str) {
+	switch (v.str) {
 		case "unspecified": return OutputChange.Unspecified;
 		default: assert(0);
 	}
@@ -344,9 +354,9 @@ enum WindowChange
 	Urgent
 }
 
-T fromJSON(T)(JSONValue json) if (is(T == WindowChange))
+T fromJSON(T)(JSONValue v) if (is(T == WindowChange))
 {
-	switch (json.str) {
+	switch (v.str) {
 		case "new": return WindowChange.New;
 		case "close": return WindowChange.Close;
 		case "focus": return WindowChange.Focus;
@@ -364,9 +374,9 @@ enum BindingChange
 	Run
 }
 
-T fromJSON(T)(JSONValue json) if (is(T == BindingChange))
+T fromJSON(T)(JSONValue v) if (is(T == BindingChange))
 {
-	switch (json.str) {
+	switch (v.str) {
 		case "run": return BindingChange.Run;
 		default: assert(0);
 	}
@@ -378,9 +388,9 @@ enum InputType
 	Mouse
 }
 
-T fromJSON(T)(JSONValue json) if (is(T == InputType))
+T fromJSON(T)(JSONValue v) if (is(T == InputType))
 {
-	switch (json.str) {
+	switch (v.str) {
 		case "keyboard": return InputType.Keyboard;
 		case "mouse": return InputType.Mouse;
 		default: assert(0);
@@ -395,19 +405,21 @@ struct Binding
 	Nullable!string symbol;
 	InputType input_type;
 
-	this(JSONValue json)
-	{
-		command = json["command"].str;
-		event_state_mask = map!(json => json.str)(json["event_state_mask"].array).array;
-		input_code = json["input_code"].integer;
-		if (!json["symbol"].isNull) symbol = json["symbol"].str;
-		input_type = fromJSON!InputType(json["input_type"]);
-	}
-
 	string toString()
 	{
 		return "Binding(\"%s\", %s, %u, \"%s\", %s)".format(command, event_state_mask, input_code, symbol, input_type);
 	}
+}
+
+T fromJSON(T)(JSONValue v) if (is(T == Binding))
+{
+	return Binding(
+		v["command"].str,
+		map!(v => v.str)(v["event_state_mask"].array).array,
+		v["input_code"].integer,
+		v["symbol"].isNull ? Nullable!string.init : Nullable!string(v["symbol"].str),
+		fromJSON!InputType(v["input_type"])
+	);
 }
 
 template EventCallback(alias T) if (T == EventType.Workspace)
@@ -471,14 +483,16 @@ private:
 
 	JSONValue request(RequestType type, immutable(void)[] message = [])
 	{
-		p.requestSocket.sendMessage(type, message);
+		auto socket = p.requestSocket;
 
-		auto responseHeader = p.requestSocket.receiveExactly!Header;
-		auto response = p.requestSocket.receiveExactly(new ubyte[responseHeader.size]);
+		socket.sendMessage(type, message);
+
+		auto header = socket.receiveExactly!Header;
+		auto payload = socket.receiveExactly(new ubyte[header.payloadSize]);
 
 		// This is valid only because corresponding request and response types match uint values
-		enforce(type == responseHeader.responseType);
-		return parseJSON(response);
+		enforce(type == header.responseType);
+		return parseJSON(payload);
 	}
 
 public:
@@ -490,12 +504,12 @@ public:
 
 	auto execute(string command)
 	{
-		return map!(json => CommandStatus(json))(request(RequestType.Command, command).array);
+		return map!(v => fromJSON!CommandStatus(v))(request(RequestType.Command, command).array);
 	}
 
 	auto workspaces() @property
 	{
-		return map!(json => Workspace(json))(request(RequestType.GetWorkspaces).array);
+		return map!(v => fromJSON!Workspace(v))(request(RequestType.GetWorkspaces).array);
 	}
 
 	mixin((cast(EventType[]) [ EnumMembers!EventType ])
@@ -513,7 +527,7 @@ public:
 
 	auto outputs() @property
 	{
-		return map!(json => Output(json))(request(RequestType.GetOutputs).array);
+		return map!(v => fromJSON!Output(v))(request(RequestType.GetOutputs).array);
 	}
 
 	Container tree() @property
@@ -523,12 +537,12 @@ public:
 
 	auto marks() @property
 	{
-		return map!(json => json.str)(request(RequestType.GetMarks).array);
+		return map!(v => v.str)(request(RequestType.GetMarks).array);
 	}
 
 	auto configuredBars() @property
 	{
-		return map!(json => json.str)(request(RequestType.GetBarConfig).array);
+		return map!(v => v.str)(request(RequestType.GetBarConfig).array);
 	}
 
 	auto getBarConfig(string id)
@@ -538,7 +552,7 @@ public:
 
 	Version version_() @property
 	{
-		return Version(request(RequestType.GetVersion));
+		return fromJSON!Version(request(RequestType.GetVersion));
 	}
 }
 
@@ -558,16 +572,18 @@ private:
 	{
 		while (true) {
 			auto header = connection.p.eventSocket.receiveExactly!Header;
-			auto json = parseJSON(connection.p.eventSocket.receiveExactly(new ubyte[header.size]));
+			auto payload = parseJSON(connection.p.eventSocket.receiveExactly(new ubyte[header.payloadSize]));
+
 			if (ResponseType.Subscribe == header.responseType) {
 				continue;
 			}
+
 			switch (header.eventType) {
 				case EventType.Workspace:
-					auto change = fromJSON!WorkspaceChange(json["change"]);
-					auto current = Container(json["current"]);
+					auto change = fromJSON!WorkspaceChange(payload["change"]);
+					auto current = Container(payload["current"]);
 					Nullable!Container old;
-					if (!json["old"].isNull) old = Container(json["old"]);
+					if (!payload["old"].isNull) old = Container(payload["old"]);
 
 					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Workspace]) {
 						auto callback = cb.get!(EventCallback!(EventType.Workspace));
@@ -575,7 +591,7 @@ private:
 					}
 					break;
 				case EventType.Output:
-					auto change = fromJSON!OutputChange(json["change"]);
+					auto change = fromJSON!OutputChange(payload["change"]);
 
 					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Output]) {
 						auto callback = cb.get!(EventCallback!(EventType.Output));
@@ -583,8 +599,8 @@ private:
 					}
 					break;
 				case EventType.Mode:
-					auto change = json["change"].str;
-					auto pango_markup = JSON_TYPE.TRUE == json["pango_markup"].type;
+					auto change = payload["change"].str;
+					auto pango_markup = JSON_TYPE.TRUE == payload["pango_markup"].type;
 
 					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Mode]) {
 						auto callback = cb.get!(EventCallback!(EventType.Mode));
@@ -592,8 +608,8 @@ private:
 					}
 					break;
 				case EventType.Window:
-					auto change = fromJSON!WindowChange(json["change"]);
-					auto container = Container(json["container"]);
+					auto change = fromJSON!WindowChange(payload["change"]);
+					auto container = Container(payload["container"]);
 
 					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Window]) {
 						auto callback = cb.get!(EventCallback!(EventType.Window));
@@ -601,7 +617,7 @@ private:
 					}
 					break;
 				case EventType.BarConfigUpdate:
-					auto barConfig = BarConfig(json);
+					auto barConfig = BarConfig(payload);
 
 					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.BarConfigUpdate]) {
 						auto callback = cb.get!(EventCallback!(EventType.BarConfigUpdate));
@@ -609,8 +625,8 @@ private:
 					}
 					break;
 				case EventType.Binding:
-					auto change = fromJSON!BindingChange(json["change"]);
-					auto binding = Binding(json["binding"]);
+					auto change = fromJSON!BindingChange(payload["change"]);
+					auto binding = fromJSON!Binding(payload["binding"]);
 
 					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Binding]) {
 						auto callback = cb.get!(EventCallback!(EventType.Binding));
