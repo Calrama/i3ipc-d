@@ -19,23 +19,22 @@ import i3ipc.protocol;
 import i3ipc.socket;
 import i3ipc.data;
 
-struct Connection
+struct Connection(T)
+	if (is(T == Thread) || is(T == Fiber))
 {
 private:
-	import core.sync.mutex : Mutex;
 	import std.variant : Variant;
 
 	import std.typecons : RefCounted, RefCountedAutoInitialize;
 	import std.socket : AddressFamily, SocketType;
 
-	Fiber eventFiber;
-	Mutex mutex;
+	T worker;
 
 	struct _Payload
 	{
 		Socket requestSocket, eventSocket;
 
-		shared (Variant[][EventType]) eventCallbacks;
+		Variant[][EventType] eventCallbacks;
 
 		~this()
 		{
@@ -67,23 +66,26 @@ public:
 
     this(UnixAddress address)
 	{
-		mutex = new Mutex();
-
 		auto requestSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
 		requestSocket.connect(address);
 
 		auto eventSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
-		eventSocket.blocking = false;
+		static if (is(T == Fiber)) {
+			eventSocket.blocking = false;
+		}
 		eventSocket.connect(address);
 
 		p = Payload(requestSocket, eventSocket);
 
-		eventFiber = new EventListener(this);
+		worker = new EventListener(this);
+		static if (is(T == Thread)) {
+			worker.start();
+		}
 	}
 
-	void dispatch()
+	static if (is(T == Fiber)) void dispatch()
 	{
-		eventFiber.call();
+		worker.call();
 	}
 
 	auto execute(string command)
@@ -101,12 +103,10 @@ public:
 			void subscribe(string eventType)(EventCallback!(EventType.%1$s) callback)
 				if (\"%1$s\" == eventType)
 			{
-				synchronized (mutex) {
-					if (EventType.%1$s !in p.eventCallbacks) {
-						p.eventSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
-					}
-					p.eventCallbacks[EventType.%1$s] ~= cast(shared(Variant[])) [Variant(callback)];
+				if (EventType.%1$s !in p.eventCallbacks) {
+					p.eventSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
 				}
+				p.eventCallbacks[EventType.%1$s] ~= [Variant(callback)];
 			}").format(eventType)).joiner.array);
 
 	auto outputs() @property
@@ -138,86 +138,89 @@ public:
 	{
 		return fromJSON!Version(request(RequestType.GetVersion));
 	}
-}
 
-class EventListener : Fiber
-{
-	import std.variant : Variant;
-
-	this(Connection connection) {
-		super(&run);
-		this.connection = connection;
-	}
-
-private:
-	Connection connection;
-
-	void run()
+	class EventListener : T
 	{
-		while (true) {
-			auto header = connection.p.eventSocket.receiveExactly!Header;
-			auto payload = parseJSON(connection.p.eventSocket.receiveExactly(new ubyte[header.payloadSize]));
+		import std.variant : Variant;
 
-			if (ResponseType.Subscribe == header.responseType) {
-				continue;
+		this(Connection!T connection) {
+			super(&run);
+			this.connection = connection;
+			static if (is(T == Thread)) {
+				isDaemon = true;
 			}
+		}
 
-			switch (header.eventType) {
-				case EventType.Workspace:
-					auto change = fromJSON!WorkspaceChange(payload["change"]);
-					auto current = Container(payload["current"]);
-					Nullable!Container old;
-					if (!payload["old"].isNull) old = Container(payload["old"]);
+	private:
+		Connection!T connection;
 
-					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Workspace]) {
-						auto callback = cb.get!(EventCallback!(EventType.Workspace));
-						callback(change, current, old);
-					}
-					break;
-				case EventType.Output:
-					auto change = fromJSON!OutputChange(payload["change"]);
+		void run()
+		{
+			while (true) {
+				auto header = connection.p.eventSocket.receiveExactly!Header;
+				auto payload = parseJSON(connection.p.eventSocket.receiveExactly(new ubyte[header.payloadSize]));
 
-					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Output]) {
-						auto callback = cb.get!(EventCallback!(EventType.Output));
-						callback(change);
-					}
-					break;
-				case EventType.Mode:
-					auto change = payload["change"].str;
-					auto pango_markup = JSON_TYPE.TRUE == payload["pango_markup"].type;
+				if (ResponseType.Subscribe == header.responseType) {
+					continue;
+				}
 
-					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Mode]) {
-						auto callback = cb.get!(EventCallback!(EventType.Mode));
-						callback(change, pango_markup);
-					}
-					break;
-				case EventType.Window:
-					auto change = fromJSON!WindowChange(payload["change"]);
-					auto container = Container(payload["container"]);
+				switch (header.eventType) {
+					case EventType.Workspace:
+						auto change = fromJSON!WorkspaceChange(payload["change"]);
+						auto current = Container(payload["current"]);
+						Nullable!Container old;
+						if (!payload["old"].isNull) old = Container(payload["old"]);
 
-					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Window]) {
-						auto callback = cb.get!(EventCallback!(EventType.Window));
-						callback(change, container);
-					}
-					break;
-				case EventType.BarConfigUpdate:
-					auto barConfig = BarConfig(payload);
+						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Workspace]) {
+							auto callback = cb.get!(EventCallback!(EventType.Workspace));
+							callback(change, current, old);
+						}
+						break;
+					case EventType.Output:
+						auto change = fromJSON!OutputChange(payload["change"]);
 
-					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.BarConfigUpdate]) {
-						auto callback = cb.get!(EventCallback!(EventType.BarConfigUpdate));
-						callback(barConfig);
-					}
-					break;
-				case EventType.Binding:
-					auto change = fromJSON!BindingChange(payload["change"]);
-					auto binding = fromJSON!Binding(payload["binding"]);
+						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Output]) {
+							auto callback = cb.get!(EventCallback!(EventType.Output));
+							callback(change);
+						}
+						break;
+					case EventType.Mode:
+						auto change = payload["change"].str;
+						auto pango_markup = JSON_TYPE.TRUE == payload["pango_markup"].type;
 
-					synchronized (connection.mutex) foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Binding]) {
-						auto callback = cb.get!(EventCallback!(EventType.Binding));
-						callback(change, binding);
-					}
-					break;
-				default: assert(0);
+						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Mode]) {
+							auto callback = cb.get!(EventCallback!(EventType.Mode));
+							callback(change, pango_markup);
+						}
+						break;
+					case EventType.Window:
+						auto change = fromJSON!WindowChange(payload["change"]);
+						auto container = Container(payload["container"]);
+
+						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Window]) {
+							auto callback = cb.get!(EventCallback!(EventType.Window));
+							callback(change, container);
+						}
+						break;
+					case EventType.BarConfigUpdate:
+						auto barConfig = BarConfig(payload);
+
+						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.BarConfigUpdate]) {
+							auto callback = cb.get!(EventCallback!(EventType.BarConfigUpdate));
+							callback(barConfig);
+						}
+						break;
+					case EventType.Binding:
+						auto change = fromJSON!BindingChange(payload["change"]);
+						auto binding = fromJSON!Binding(payload["binding"]);
+
+						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Binding]) {
+							auto callback = cb.get!(EventCallback!(EventType.Binding));
+							callback(change, binding);
+						}
+						break;
+					default: assert(0);
+				}
 			}
 		}
 	}

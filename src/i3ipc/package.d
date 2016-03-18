@@ -8,16 +8,16 @@ import i3ipc.socket;
 import i3ipc.data;
 import i3ipc.connection;
 
-Connection connect()
+Connection!T connect(T)()
 {
 	import std.process : execute;
 
 	auto result = execute(["i3", "--get-socketpath"]);
 	enforce(0 == result.status);
-	return Connection(new UnixAddress(result.output[0 .. $-1]));
+	return Connection!T(new UnixAddress(result.output[0 .. $-1]));
 }
 
-Connection connect(UnixAddress address)
+Connection!T connect(T)(UnixAddress address)
 {
-	return Connection(address);
+	return Connection!T(address);
 }

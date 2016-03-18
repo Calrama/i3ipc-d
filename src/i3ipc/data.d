@@ -8,7 +8,6 @@ import std.array : array;
 import std.format : format;
 import std.json : JSONValue, JSON_TYPE;
 
-
 struct Rectangle
 {
 	long x, y, width, height;
