@@ -1,0 +1,11 @@
+{
+	"name": "threaded",
+	"description": "Shows how to back a connection with a thread",
+
+	"targetType": "executable",
+
+    "mainSourceFile": "threaded.d",
+	"dependencies": {
+		"i3ipc-d": { "path": "../.." }
+	}
+}
