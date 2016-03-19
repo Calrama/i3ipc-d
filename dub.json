@@ -1,0 +1,12 @@
+{
+    "name": "i3ipc-d",
+    "description": "D library for communicating with the i3 window manager",
+    "copyright": "Copyright © 2016, Moritz Maxeiner",
+    "authors": ["Moritz Maxeiner"],
+    "homepage": "https://github.com/Calrama/i3ipc-d",
+    "license": "MIT",
+
+    "targetType": "sourceLibrary",
+	"importPaths": ["."],
+	"sourcePaths": ["i3ipc"],
+}
