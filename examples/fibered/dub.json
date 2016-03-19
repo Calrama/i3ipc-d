@@ -1,0 +1,11 @@
+{
+	"name": "fibered",
+	"description": "Shows how to back a connection's event handling with a fiber",
+
+	"targetType": "executable",
+
+    "mainSourceFile": "fibered.d",
+	"dependencies": {
+		"i3ipc-d": { "path": "../.." }
+	}
+}
