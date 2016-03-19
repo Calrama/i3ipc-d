@@ -28,18 +28,21 @@ private:
 	import std.typecons : RefCounted, RefCountedAutoInitialize;
 	import std.socket : AddressFamily, SocketType;
 
+	import std.container.dlist : DList;
+
 	T worker;
+	// TODO: Add mutex if T is Thread
 
 	struct _Payload
 	{
-		Socket requestSocket, eventSocket;
+		Socket syncSocket, asyncSocket;
 
-		Variant[][EventType] eventCallbacks;
+		DList!Variant[EventType] eventCallbacks;
 
 		~this()
 		{
-			requestSocket.close;
-			eventSocket.close;
+			syncSocket.close;
+			asyncSocket.close;
 		}
 
 		@disable this(this);
@@ -50,7 +53,7 @@ private:
 
 	JSONValue request(RequestType type, immutable(void)[] message = [])
 	{
-		auto socket = p.requestSocket;
+		auto socket = p.syncSocket;
 
 		socket.sendMessage(type, message);
 
@@ -66,16 +69,16 @@ public:
 
     this(UnixAddress address)
 	{
-		auto requestSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
-		requestSocket.connect(address);
+		auto syncSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
+		syncSocket.connect(address);
 
-		auto eventSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
+		auto asyncSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
 		static if (is(T == Fiber)) {
-			eventSocket.blocking = false;
+			asyncSocket.blocking = false;
 		}
-		eventSocket.connect(address);
+		asyncSocket.connect(address);
 
-		p = Payload(requestSocket, eventSocket);
+		p = Payload(syncSocket, asyncSocket);
 
 		worker = new EventListener(this);
 		static if (is(T == Thread)) {
@@ -99,15 +102,16 @@ public:
 	}
 
 	mixin((cast(EventType[]) [ EnumMembers!EventType ])
-		.map!((EventType eventType) => ("
+		.map!((EventType eventType) => q{
 			void subscribe(string eventType)(EventCallback!(EventType.%1$s) callback)
-				if (\"%1$s\" == eventType)
+				if ("%1$s" == eventType)
 			{
 				if (EventType.%1$s !in p.eventCallbacks) {
-					p.eventSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
+					p.eventCallbacks[EventType.%1$s] = DList!Variant();
+					p.asyncSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
 				}
-				p.eventCallbacks[EventType.%1$s] ~= [Variant(callback)];
-			}").format(eventType)).joiner.array);
+				p.eventCallbacks[EventType.%1$s] ~= Variant(callback);
+			}}.format(eventType)).joiner.array);
 
 	auto outputs() @property
 	{
@@ -141,7 +145,8 @@ public:
 
 	class EventListener : T
 	{
-		import std.variant : Variant;
+		import std.typecons : tuple;
+		import std.range : zip;
 
 		this(Connection!T connection) {
 			super(&run);
@@ -154,71 +159,67 @@ public:
 	private:
 		Connection!T connection;
 
+		enum eventHandlers = [
+			EventType.Workspace : tuple(
+				q{
+					auto change = fromJSON!WorkspaceChange(payload["change"]);
+					auto current = Container(payload["current"]);
+					Nullable!Container old;
+					if (!payload["old"].isNull) old = Container(payload["old"]);
+				},
+				q{ cb(change, current, old); }
+			),
+			EventType.Output : tuple(
+				q{ auto change = fromJSON!OutputChange(payload["change"]); },
+				q{ cb(change); }
+			),
+			EventType.Mode : tuple(
+				q{
+					auto change = payload["change"].str;
+					auto pango_markup = JSON_TYPE.TRUE == payload["pango_markup"].type;
+				},
+				q{ cb(change, pango_markup); }
+			),
+			EventType.Window : tuple(
+				q{
+					auto change = fromJSON!WindowChange(payload["change"]);
+					auto container = Container(payload["container"]);
+				},
+				q{ cb(change, container); }
+			),
+			EventType.BarConfigUpdate : tuple(
+				q{ auto barConfig = BarConfig(payload); },
+				q{ cb(barConfig); }
+			),
+			EventType.Binding : tuple(
+				q{
+					auto change = fromJSON!BindingChange(payload["change"]);
+					auto binding = fromJSON!Binding(payload["binding"]);
+				},
+				q{ cb(change, binding); }
+			)
+		];
+
 		void run()
 		{
 			while (true) {
-				auto header = connection.p.eventSocket.receiveExactly!Header;
-				auto payload = parseJSON(connection.p.eventSocket.receiveExactly(new ubyte[header.payloadSize]));
+				auto header = connection.p.asyncSocket.receiveExactly!Header;
+				auto payload = parseJSON(connection.p.asyncSocket.receiveExactly(new ubyte[header.payloadSize]));
 
 				if (ResponseType.Subscribe == header.responseType) {
 					continue;
 				}
 
 				switch (header.eventType) {
-					case EventType.Workspace:
-						auto change = fromJSON!WorkspaceChange(payload["change"]);
-						auto current = Container(payload["current"]);
-						Nullable!Container old;
-						if (!payload["old"].isNull) old = Container(payload["old"]);
-
-						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Workspace]) {
-							auto callback = cb.get!(EventCallback!(EventType.Workspace));
-							callback(change, current, old);
-						}
-						break;
-					case EventType.Output:
-						auto change = fromJSON!OutputChange(payload["change"]);
-
-						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Output]) {
-							auto callback = cb.get!(EventCallback!(EventType.Output));
-							callback(change);
-						}
-						break;
-					case EventType.Mode:
-						auto change = payload["change"].str;
-						auto pango_markup = JSON_TYPE.TRUE == payload["pango_markup"].type;
-
-						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Mode]) {
-							auto callback = cb.get!(EventCallback!(EventType.Mode));
-							callback(change, pango_markup);
-						}
-						break;
-					case EventType.Window:
-						auto change = fromJSON!WindowChange(payload["change"]);
-						auto container = Container(payload["container"]);
-
-						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Window]) {
-							auto callback = cb.get!(EventCallback!(EventType.Window));
-							callback(change, container);
-						}
-						break;
-					case EventType.BarConfigUpdate:
-						auto barConfig = BarConfig(payload);
-
-						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.BarConfigUpdate]) {
-							auto callback = cb.get!(EventCallback!(EventType.BarConfigUpdate));
-							callback(barConfig);
-						}
-						break;
-					case EventType.Binding:
-						auto change = fromJSON!BindingChange(payload["change"]);
-						auto binding = fromJSON!Binding(payload["binding"]);
-
-						foreach (cb; cast(Variant[]) connection.p.eventCallbacks[EventType.Binding]) {
-							auto callback = cb.get!(EventCallback!(EventType.Binding));
-							callback(change, binding);
-						}
-						break;
+					mixin(zip(eventHandlers.keys, eventHandlers.values).map!q{q{
+						case EventType.%1$s:
+							%2$s
+							connection.p.eventCallbacks[EventType.%1$s].each!((v) {
+								auto cb = v.get!(EventCallback!(EventType.%1$s));
+								%3$s
+							});
+							break;
+						}.format(a[0], a[1][0], a[1][1])}.joiner.array);
 					default: assert(0);
 				}
 			}
