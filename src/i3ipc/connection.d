@@ -20,7 +20,7 @@ import i3ipc.socket;
 import i3ipc.data;
 
 struct Connection(T)
-	if (is(T == Thread) || is(T == Fiber))
+	if (is(T == Thread) || is(T == Fiber) || is(T == void))
 {
 private:
 	import std.variant : Variant;
@@ -29,20 +29,23 @@ private:
 	import std.socket : AddressFamily, SocketType;
 
 	import std.container.dlist : DList;
+	import core.sync.mutex : Mutex;
 
-	T worker;
-	// TODO: Add mutex if T is Thread
+	static if (!is(T == void)) T worker;
 
 	struct _Payload
 	{
-		Socket syncSocket, asyncSocket;
-
-		DList!Variant[EventType] eventCallbacks;
+		Socket syncSocket;
+		static if (!is(T == void)) {
+			Socket asyncSocket;
+			static if (is(T == Thread)) Mutex mutex;
+			DList!Variant[EventType] eventCallbacks;
+		}
 
 		~this()
 		{
 			syncSocket.close;
-			asyncSocket.close;
+			static if (!is(T == void)) asyncSocket.close;
 		}
 
 		@disable this(this);
@@ -51,18 +54,10 @@ private:
 	alias Payload = RefCounted!(_Payload, RefCountedAutoInitialize.no);
 	Payload p;
 
-	JSONValue request(RequestType type, immutable(void)[] message = [])
+	JSONValue get(RequestType type, immutable(void)[] message = [])
 	{
-		auto socket = p.syncSocket;
-
-		socket.sendMessage(type, message);
-
-		auto header = socket.receiveExactly!Header;
-		auto payload = socket.receiveExactly(new ubyte[header.payloadSize]);
-
-		// This is valid only because corresponding request and response types match uint values
-		enforce(type == header.responseType);
-		return parseJSON(payload);
+		p.syncSocket.sendMessage(type, message);
+		return p.syncSocket.receiveMessage(cast(ResponseType) type);
 	}
 
 public:
@@ -78,11 +73,19 @@ public:
 		}
 		asyncSocket.connect(address);
 
-		p = Payload(syncSocket, asyncSocket);
+		static if (is(T == void)) {
+			p = Payload(syncSocket);
+		} else if (is(T == Fiber)) {
+			p = Payload(syncSocket, asyncSocket);
+		} else if (is(T == Thread)) {
+			p = Payload(syncSocket, asyncSocket, new Mutex);
+		}
 
-		worker = new EventListener(this);
-		static if (is(T == Thread)) {
-			worker.start();
+		static if (!is(T == void)) {
+			worker = new EventListener(this);
+			static if (is(T == Thread)) {
+				worker.start();
+			}
 		}
 	}
 
@@ -93,57 +96,60 @@ public:
 
 	auto execute(string command)
 	{
-		return map!(v => fromJSON!CommandStatus(v))(request(RequestType.Command, command).array);
+		return map!(v => fromJSON!CommandStatus(v))(get(RequestType.Command, command).array);
 	}
 
 	auto workspaces() @property
 	{
-		return map!(v => fromJSON!Workspace(v))(request(RequestType.GetWorkspaces).array);
+		return map!(v => fromJSON!Workspace(v))(get(RequestType.GetWorkspaces).array);
 	}
 
-	mixin((cast(EventType[]) [ EnumMembers!EventType ])
+	static if (!is(T == void)) mixin((cast(EventType[]) [ EnumMembers!EventType ])
 		.map!((EventType eventType) => q{
 			void subscribe(string eventType)(EventCallback!(EventType.%1$s) callback)
 				if ("%1$s" == eventType)
 			{
-				if (EventType.%1$s !in p.eventCallbacks) {
-					p.eventCallbacks[EventType.%1$s] = DList!Variant();
-					p.asyncSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
+				%2$s
+				{
+					if (EventType.%1$s !in p.eventCallbacks) {
+						p.eventCallbacks[EventType.%1$s] = DList!Variant();
+						p.asyncSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
+					}
+					p.eventCallbacks[EventType.%1$s] ~= Variant(callback);
 				}
-				p.eventCallbacks[EventType.%1$s] ~= Variant(callback);
-			}}.format(eventType)).joiner.array);
+			}}.format(eventType, is(T == Thread) ? q{ synchronized (p.mutex) } : "")).joiner.array);
 
 	auto outputs() @property
 	{
-		return map!(v => fromJSON!Output(v))(request(RequestType.GetOutputs).array);
+		return map!(v => fromJSON!Output(v))(get(RequestType.GetOutputs).array);
 	}
 
-	Container tree() @property
+	auto tree() @property
 	{
-		return Container(request(RequestType.GetTree));
+		return Container(get(RequestType.GetTree));
 	}
 
 	auto marks() @property
 	{
-		return map!(v => v.str)(request(RequestType.GetMarks).array);
+		return map!(v => v.str)(get(RequestType.GetMarks).array);
 	}
 
 	auto configuredBars() @property
 	{
-		return map!(v => v.str)(request(RequestType.GetBarConfig).array);
+		return map!(v => v.str)(get(RequestType.GetBarConfig).array);
 	}
 
 	auto getBarConfig(string id)
 	{
-		return BarConfig(request(RequestType.GetBarConfig, id));
+		return BarConfig(get(RequestType.GetBarConfig, id));
 	}
 
-	Version version_() @property
+	auto version_() @property
 	{
-		return fromJSON!Version(request(RequestType.GetVersion));
+		return fromJSON!Version(get(RequestType.GetVersion));
 	}
 
-	class EventListener : T
+	static if (!is(T == void)) class EventListener : T
 	{
 		import std.typecons : tuple;
 		import std.range : zip;
@@ -206,20 +212,21 @@ public:
 				auto header = connection.p.asyncSocket.receiveExactly!Header;
 				auto payload = parseJSON(connection.p.asyncSocket.receiveExactly(new ubyte[header.payloadSize]));
 
-				if (ResponseType.Subscribe == header.responseType) {
-					continue;
-				}
-
-				switch (header.eventType) {
+				if (EventMask & header.rawType) switch (header.eventType) {
 					mixin(zip(eventHandlers.keys, eventHandlers.values).map!q{q{
 						case EventType.%1$s:
 							%2$s
+							%4$s
 							connection.p.eventCallbacks[EventType.%1$s].each!((v) {
 								auto cb = v.get!(EventCallback!(EventType.%1$s));
 								%3$s
 							});
 							break;
-						}.format(a[0], a[1][0], a[1][1])}.joiner.array);
+						}.format(a[0], a[1][0], a[1][1], is(T == Thread) ? q{ synchronized (p.mutex) } : "")}.joiner.array);
+					default: assert(0);
+				} else switch (header.responseType) {
+					case ResponseType.Subscribe:
+						continue;
 					default: assert(0);
 				}
 			}

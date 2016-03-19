@@ -21,3 +21,43 @@ Connection!T connect(T)(UnixAddress address)
 {
 	return Connection!T(address);
 }
+
+auto execute(string command)
+{
+	return connect!void.execute(command);
+}
+
+auto workspaces() @property
+{
+	return connect!void.workspaces;
+}
+
+auto outputs() @property
+{
+	return connect!void.outputs;
+}
+
+Container tree() @property
+{
+	return connect!void.tree;
+}
+
+auto marks() @property
+{
+	return connect!void.marks;
+}
+
+auto configuredBars() @property
+{
+	return connect!void.configuredBars;
+}
+
+auto getBarConfig(string id)
+{
+	return connect!void.getBarConfig(id);
+}
+
+auto version_()
+{
+	return connect!void.version_;
+}

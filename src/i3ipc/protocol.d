@@ -3,6 +3,9 @@ module i3ipc.protocol;
 
 import std.socket : Socket;
 import std.conv : to;
+import std.json : JSONValue, parseJSON;
+
+import i3ipc.socket;
 
 align(1) struct Header
 {
@@ -12,6 +15,7 @@ align(1) struct Header
     uint payloadSize;
 	union
 	{
+		uint rawType;
 		RequestType requestType;
 		ResponseType responseType;
 		EventType eventType;
@@ -73,4 +77,13 @@ void sendMessage(Socket socket, RequestType type, immutable(void)[] message = []
     header.requestType = type;
     socket.send((cast(void*) &header)[0 .. Header.sizeof]);
     if (message.length) socket.send(message);
+}
+
+JSONValue receiveMessage(Socket socket, ResponseType type)
+{
+	auto header = socket.receiveExactly!Header;
+	auto payload = socket.receiveExactly(new ubyte[header.payloadSize]);
+
+	enforce(type == header.responseType);
+	return parseJSON(payload);
 }
