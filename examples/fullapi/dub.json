@@ -1,0 +1,11 @@
+{
+	"name": "fullapi",
+	"description": "Shows usage of all available API methods",
+
+	"targetType": "executable",
+
+    "mainSourceFile": "fullapi.d",
+	"dependencies": {
+		"i3ipc-d": { "path": "../.." }
+	}
+}
