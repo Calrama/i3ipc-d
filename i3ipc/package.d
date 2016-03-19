@@ -8,16 +8,7 @@ import i3ipc.socket;
 import i3ipc.data;
 import i3ipc.connection;
 
-Connection!T connect(T)()
-{
-	import std.process : execute;
-
-	auto result = execute(["i3", "--get-socketpath"]);
-	enforce(0 == result.status);
-	return Connection!T(new UnixAddress(result.output[0 .. $-1]));
-}
-
-Connection!T connect(T)(UnixAddress address)
+Connection!T connect(T)(UnixAddress address = defaultIPCAddress)
 {
 	return Connection!T(address);
 }
@@ -60,4 +51,13 @@ auto getBarConfig(string id)
 auto version_()
 {
 	return connect!void.version_;
+}
+
+private UnixAddress defaultIPCAddress()
+{
+	import std.process : execute;
+
+	auto result = execute(["i3", "--get-socketpath"]);
+	enforce(0 == result.status);
+	return new UnixAddress(result.output[0 .. $-1]);
 }
