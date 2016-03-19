@@ -3,7 +3,12 @@ i3ipc-d
 
 **i3ipc-d** provides a high-level D API to the window manager [i3](http://i3wm.org/)'s [interprocess communication interface](https://i3wm.org/docs/ipc.html).
 
-See [here](examples) for the examples, one of which is this:
+See [here](examples/fullapi/fullapi.d) for an example showing all available API methods and [here](examples) for all examples. Available connection types are
+- [threaded](examples/threaded/threaded.d) (events are automatically dispatched by a dedicated thread),
+- [fibered](examples/fibered/fibered.d) (events need to be explicitly dispatched by calling ```connection.dispatch```), and
+- [eventless](examples/eventless/eventless.d) (events are not supported at all).
+
+The following shows how to setup a threaded connection:
 
 ```d
 module threaded;
