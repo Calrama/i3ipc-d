@@ -60,12 +60,12 @@ enum EventType : uint
 string toString(EventType type)
 {
 	switch (type) {
-		case EventType.Workspace: return "workspace"; break;
-		case EventType.Output: return "output"; break;
-		case EventType.Mode: return "mode"; break;
-		case EventType.Window: return "window"; break;
-		case EventType.BarConfigUpdate: return "barconfig_update"; break;
-		case EventType.Binding: return "binding"; break;
+		case EventType.Workspace: return "workspace";
+		case EventType.Output: return "output";
+		case EventType.Mode: return "mode";
+		case EventType.Window: return "window";
+		case EventType.BarConfigUpdate: return "barconfig_update";
+		case EventType.Binding: return "binding";
 		default: assert(0);
 	}
 }
