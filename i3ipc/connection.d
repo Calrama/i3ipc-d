@@ -75,9 +75,9 @@ public:
 
 		static if (is(T == void)) {
 			p = Payload(syncSocket);
-		} else if (is(T == Fiber)) {
+		} else static if (is(T == Fiber)) {
 			p = Payload(syncSocket, asyncSocket);
-		} else if (is(T == Thread)) {
+		} else static if (is(T == Thread)) {
 			p = Payload(syncSocket, asyncSocket, new Mutex);
 		}
 
