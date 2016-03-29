@@ -60,10 +60,13 @@ private:
 		return p.syncSocket.receiveMessage(cast(ResponseType) type);
 	}
 
+	void delegate() onClosed;
+
 public:
 
-    this(UnixAddress address)
+    this(UnixAddress address, void delegate() onClosed = null)
 	{
+		this.onClosed = onClosed;
 		auto syncSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
 		syncSocket.connect(address);
 
@@ -208,26 +211,36 @@ public:
 
 		void run()
 		{
-			while (true) {
-				auto header = connection.p.asyncSocket.receiveExactly!Header;
-				auto payload = parseJSON(connection.p.asyncSocket.receiveExactly(new ubyte[header.payloadSize]));
+			import std.socket : SocketException;
 
-				if (EventMask & header.rawType) switch (header.eventType) {
-					mixin(zip(eventHandlers.keys, eventHandlers.values).map!q{q{
-						case EventType.%1$s:
-							%2$s
-							%4$s
-							connection.p.eventCallbacks[EventType.%1$s].each!((v) {
-								auto cb = v.get!(EventCallback!(EventType.%1$s));
-								%3$s
-							});
-							break;
-						}.format(a[0], a[1][0], a[1][1], is(T == Thread) ? q{ synchronized (p.mutex) } : "")}.joiner.array);
-					default: assert(0);
-				} else switch (header.responseType) {
-					case ResponseType.Subscribe:
-						continue;
-					default: assert(0);
+			try
+			{
+				while (true) {
+					auto header = connection.p.asyncSocket.receiveExactly!Header;
+					auto payload = parseJSON(connection.p.asyncSocket.receiveExactly(new ubyte[header.payloadSize]));
+
+					if (EventMask & header.rawType) switch (header.eventType) {
+						mixin(zip(eventHandlers.keys, eventHandlers.values).map!q{q{
+							case EventType.%1$s:
+								%2$s
+								%4$s
+								connection.p.eventCallbacks[EventType.%1$s].each!((v) {
+									auto cb = v.get!(EventCallback!(EventType.%1$s));
+									%3$s
+								});
+								break;
+							}.format(a[0], a[1][0], a[1][1], is(T == Thread) ? q{ synchronized (p.mutex) } : "")}.joiner.array);
+						default: assert(0);
+					} else switch (header.responseType) {
+						case ResponseType.Subscribe:
+							continue;
+						default: assert(0);
+					}
+				}
+			}
+			catch (SocketException e) {
+				if (connection.onClosed !is null) {
+					connection.onClosed();
 				}
 			}
 		}

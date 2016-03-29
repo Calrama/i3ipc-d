@@ -8,9 +8,9 @@ import i3ipc.socket;
 import i3ipc.data;
 import i3ipc.connection;
 
-Connection!T connect(T)(UnixAddress address = defaultIPCAddress)
+Connection!T connect(T)(UnixAddress address = defaultIPCAddress, void delegate() onClosed = null)
 {
-	return Connection!T(address);
+	return Connection!T(address, onClosed);
 }
 
 auto execute(string command)
@@ -53,7 +53,7 @@ auto version_()
 	return connect!void.version_;
 }
 
-private UnixAddress defaultIPCAddress()
+UnixAddress defaultIPCAddress()
 {
 	import std.process : execute;
 
