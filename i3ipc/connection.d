@@ -1,36 +1,11 @@
 
 module i3ipc.connection;
 
-import core.thread : Fiber, Thread;
-
-import std.traits : EnumMembers;
-import std.exception : enforce;
-
-import std.typecons : Nullable, Tuple;
-import std.algorithm : map, joiner, each;
-import std.array : array;
-
-import std.format : format;
-import std.json : parseJSON;
-
-import std.socket : UnixAddress, Socket;
-
-import i3ipc.protocol;
-import i3ipc.socket;
-import i3ipc.data;
 
 struct Connection(T)
 	if (is(T == Thread) || is(T == Fiber) || is(T == void))
 {
 private:
-	import std.variant : Variant;
-
-	import std.typecons : RefCounted, RefCountedAutoInitialize;
-	import std.socket : AddressFamily, SocketType;
-
-	import std.container.dlist : DList;
-	import core.sync.mutex : Mutex;
-
 	static if (!is(T == void)) T worker;
 
 	struct _Payload
@@ -39,7 +14,13 @@ private:
 		static if (!is(T == void)) {
 			Socket asyncSocket;
 			static if (is(T == Thread)) Mutex mutex;
-			DList!Variant[EventType] eventCallbacks;
+
+			EventCallback!(EventType.Workspace)[] callbacksWorkspace;
+			EventCallback!(EventType.Output)[] callbacksOutput;
+			EventCallback!(EventType.Mode)[] callbacksMode;
+			EventCallback!(EventType.Window)[] callbacksWindow;
+			EventCallback!(EventType.BarConfigUpdate)[] callbacksBarConfigUpdate;
+			EventCallback!(EventType.Binding)[] callbacksBinding;
 		}
 
 		~this()
@@ -102,42 +83,45 @@ public:
 		return map!(v => fromJSON!CommandStatus(v))(get(RequestType.Command, command).array);
 	}
 
-	auto workspaces() @property
+	auto workspaces()
 	{
 		return map!(v => fromJSON!Workspace(v))(get(RequestType.GetWorkspaces).array);
 	}
 
-	static if (!is(T == void)) mixin((cast(EventType[]) [ EnumMembers!EventType ])
-		.map!((EventType eventType) => q{
-			void subscribe(string eventType)(EventCallback!(EventType.%1$s) callback)
-				if ("%1$s" == eventType)
-			{
-				%2$s
-				{
-					if (EventType.%1$s !in p.eventCallbacks) {
-						p.eventCallbacks[EventType.%1$s] = DList!Variant();
-						p.asyncSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
-					}
-					p.eventCallbacks[EventType.%1$s] ~= Variant(callback);
-				}
-			}}.format(eventType, is(T == Thread) ? q{ synchronized (p.mutex) } : "")).joiner.array);
+	template subscribe(string event)
+	{
+		enum Event = to!EventType(event);
+		void subscribe(EventCallback!Event dg)
+		{
+			subscribe!Event(dg);
+		}
+	}
 
-	auto outputs() @property
+	void subscribe(EventType E)(EventCallback!E dg)
+	{
+		mixin(q{%2$s { if (p.callbacks%1$s.length == 0) {
+					p.asyncSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
+				} p.callbacks%1$s ~= dg;
+				}
+				}.format(E, is(T == Thread) ? q{synchronized(p.mutex)} : ""));
+	}
+
+	auto outputs()
 	{
 		return map!(v => fromJSON!Output(v))(get(RequestType.GetOutputs).array);
 	}
 
-	auto tree() @property
+	auto tree()
 	{
 		return Container(get(RequestType.GetTree));
 	}
 
-	auto marks() @property
+	auto marks()
 	{
 		return map!(v => v.str)(get(RequestType.GetMarks).array);
 	}
 
-	auto configuredBars() @property
+	auto configuredBars()
 	{
 		return map!(v => v.str)(get(RequestType.GetBarConfig).array);
 	}
@@ -147,16 +131,13 @@ public:
 		return BarConfig(get(RequestType.GetBarConfig, id));
 	}
 
-	auto version_() @property
+	auto version_()
 	{
 		return fromJSON!Version(get(RequestType.GetVersion));
 	}
 
 	static if (!is(T == void)) class EventListener : T
 	{
-		import std.typecons : tuple;
-		import std.range : zip;
-
 		this(Connection!T connection) {
 			super(&run);
 			this.connection = connection;
@@ -211,8 +192,6 @@ public:
 
 		void run()
 		{
-			import std.socket : SocketException;
-
 			try
 			{
 				while (true) {
@@ -224,8 +203,7 @@ public:
 							case EventType.%1$s:
 								%2$s
 								%4$s
-								connection.p.eventCallbacks[EventType.%1$s].each!((v) {
-									auto cb = v.get!(EventCallback!(EventType.%1$s));
+								connection.p.callbacks%1$s.each!((cb) {
 									%3$s
 								});
 								break;
@@ -247,7 +225,7 @@ public:
 	}
 }
 
-template EventCallback(alias T) if (T == EventType.Workspace)
+template EventCallback(EventType T) if (T == EventType.Workspace)
 { alias EventCallback = void delegate(WorkspaceChange, Container, Nullable!Container); }
 template EventCallback(alias T) if (T == EventType.Output)
 { alias EventCallback = void delegate(OutputChange); }
@@ -259,3 +237,24 @@ template EventCallback(alias T) if (T == EventType.BarConfigUpdate)
 { alias EventCallback = void delegate(BarConfig); }
 template EventCallback(alias T) if (T == EventType.Binding)
 { alias EventCallback = void delegate(BindingChange, Binding); }
+
+
+import core.sync.mutex;
+import core.thread;
+
+import std.traits;
+import std.exception;
+
+import std.typecons;
+import std.range;
+import std.algorithm;
+import std.array;
+
+import std.format;
+import std.json;
+
+import std.socket;
+
+import i3ipc.protocol;
+import i3ipc.socket;
+import i3ipc.data;
