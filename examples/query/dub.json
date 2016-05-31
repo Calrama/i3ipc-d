@@ -1,0 +1,12 @@
+{
+	"name": "query",
+	"description": "Shows how to open a query connection (no event support)",
+
+	"targetType": "executable",
+	"targetPath": "bin",
+
+    "mainSourceFile": "query.d",
+	"dependencies": {
+		"i3ipc-d": { "path": "../.." }
+	}
+}

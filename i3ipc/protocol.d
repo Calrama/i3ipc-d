@@ -1,6 +1,7 @@
 
 module i3ipc.protocol;
 
+import std.exception : enforce;
 import std.socket : Socket;
 import std.conv : to;
 import std.json : JSONValue, parseJSON;

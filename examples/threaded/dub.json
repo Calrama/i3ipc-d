@@ -3,6 +3,7 @@
 	"description": "Shows how to back a connection with a thread",
 
 	"targetType": "executable",
+	"targetPath": "bin",
 
     "mainSourceFile": "threaded.d",
 	"dependencies": {

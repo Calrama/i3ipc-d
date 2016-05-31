@@ -1,16 +1,11 @@
 
 module threaded;
 
-import core.time : seconds;
-import core.thread : Thread, dur;
-
-import std.stdio : writeln;
-
 import i3ipc;
 
 void main(string[] args)
 {
-	auto c = i3ipc.connect!Thread;
+	auto c = i3ipc.connect!ThreadedConnection;
 
 	c.subscribe!"Workspace"((change, current, old) => writeln(change, " ", current, " ", old));
 
@@ -20,3 +15,6 @@ void main(string[] args)
 	 +/
 	Thread.sleep(3.seconds);
 }
+
+import core.thread;
+import std.stdio;

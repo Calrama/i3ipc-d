@@ -1,228 +1,254 @@
 
 module i3ipc.connection;
 
-
-struct Connection(T)
-	if (is(T == Thread) || is(T == Fiber) || is(T == void))
+struct QueryConnection
 {
 private:
-	static if (!is(T == void)) T worker;
-
-	struct _Payload
+	struct State
 	{
-		Socket syncSocket;
-		static if (!is(T == void)) {
-			Socket asyncSocket;
-			static if (is(T == Thread)) Mutex mutex;
-
-			EventCallback!(EventType.Workspace)[] callbacksWorkspace;
-			EventCallback!(EventType.Output)[] callbacksOutput;
-			EventCallback!(EventType.Mode)[] callbacksMode;
-			EventCallback!(EventType.Window)[] callbacksWindow;
-			EventCallback!(EventType.BarConfigUpdate)[] callbacksBarConfigUpdate;
-			EventCallback!(EventType.Binding)[] callbacksBinding;
-		}
+		Socket socket;
 
 		~this()
 		{
-			syncSocket.close;
-			static if (!is(T == void)) asyncSocket.close;
+			socket.close;
 		}
 
 		@disable this(this);
-		void opAssign(_Payload) { assert(false); }
+		void opAssign(State) { assert(false); }
 	}
-	alias Payload = RefCounted!(_Payload, RefCountedAutoInitialize.no);
-	Payload p;
+	alias StateRef = RefCounted!(State, RefCountedAutoInitialize.no);
+	StateRef state;
 
-	JSONValue get(RequestType type, immutable(void)[] message = [])
+	JSONValue query(RequestType type, immutable(void)[] message = [])
 	{
-		p.syncSocket.sendMessage(type, message);
-		return p.syncSocket.receiveMessage(cast(ResponseType) type);
+		state.socket.sendMessage(type, message);
+		return state.socket.receiveMessage(cast(ResponseType) type);
 	}
-
-	void delegate() onClosed;
 
 public:
-
-    this(UnixAddress address, void delegate() onClosed = null)
+    this(UnixAddress address)
 	{
-		this.onClosed = onClosed;
-		auto syncSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
-		syncSocket.connect(address);
-
-		auto asyncSocket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
-		static if (is(T == Fiber)) {
-			asyncSocket.blocking = false;
-		}
-		asyncSocket.connect(address);
-
-		static if (is(T == void)) {
-			p = Payload(syncSocket);
-		} else static if (is(T == Fiber)) {
-			p = Payload(syncSocket, asyncSocket);
-		} else static if (is(T == Thread)) {
-			p = Payload(syncSocket, asyncSocket, new Mutex);
-		}
-
-		static if (!is(T == void)) {
-			worker = new EventListener(this);
-			static if (is(T == Thread)) {
-				worker.start();
-			}
-		}
-	}
-
-	static if (is(T == Fiber)) void dispatch()
-	{
-		worker.call();
+		auto socket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
+		socket.connect(address);
+		state = StateRef(socket);
 	}
 
 	auto execute(string command)
 	{
-		return map!(v => fromJSON!CommandStatus(v))(get(RequestType.Command, command).array);
+		return map!(v => fromJSON!CommandStatus(v))(query(RequestType.Command, command).array);
 	}
 
 	auto workspaces()
 	{
-		return map!(v => fromJSON!Workspace(v))(get(RequestType.GetWorkspaces).array);
-	}
-
-	template subscribe(string event)
-	{
-		enum Event = to!EventType(event);
-		void subscribe(EventCallback!Event dg)
-		{
-			subscribe!Event(dg);
-		}
-	}
-
-	void subscribe(EventType E)(EventCallback!E dg)
-	{
-		mixin(q{%2$s { if (p.callbacks%1$s.length == 0) {
-					p.asyncSocket.sendMessage(RequestType.Subscribe, JSONValue([EventType.%1$s.toString]).toString);
-				} p.callbacks%1$s ~= dg;
-				}
-				}.format(E, is(T == Thread) ? q{synchronized(p.mutex)} : ""));
+		return map!(v => fromJSON!Workspace(v))(query(RequestType.GetWorkspaces).array);
 	}
 
 	auto outputs()
 	{
-		return map!(v => fromJSON!Output(v))(get(RequestType.GetOutputs).array);
+		return map!(v => fromJSON!Output(v))(query(RequestType.GetOutputs).array);
 	}
 
 	auto tree()
 	{
-		return Container(get(RequestType.GetTree));
+		return Container(query(RequestType.GetTree));
 	}
 
 	auto marks()
 	{
-		return map!(v => v.str)(get(RequestType.GetMarks).array);
+		return map!(v => v.str)(query(RequestType.GetMarks).array);
 	}
 
 	auto configuredBars()
 	{
-		return map!(v => v.str)(get(RequestType.GetBarConfig).array);
+		return map!(v => v.str)(query(RequestType.GetBarConfig).array);
 	}
 
 	auto getBarConfig(string id)
 	{
-		return BarConfig(get(RequestType.GetBarConfig, id));
+		return BarConfig(query(RequestType.GetBarConfig, id));
 	}
 
 	auto version_()
 	{
-		return fromJSON!Version(get(RequestType.GetVersion));
+		return fromJSON!Version(query(RequestType.GetVersion));
+	}
+}
+
+alias FiberedConnection = EventConnection!Fiber;
+alias ThreadedConnection = EventConnection!Thread;
+private struct EventConnection(Listener)
+	if (is(Listener == Thread) || is(Listener == Fiber))
+{
+private:
+	Listener listener;
+
+	struct State
+	{
+		Socket socket;
+		Mutex mutex;
+
+		UnixAddress address;
+
+		EventCallback!(EventType.Workspace)[] WorkspaceCallbacks;
+		EventCallback!(EventType.Output)[] OutputCallbacks;
+		EventCallback!(EventType.Mode)[] ModeCallbacks;
+		EventCallback!(EventType.Window)[] WindowCallbacks;
+		EventCallback!(EventType.BarConfigUpdate)[] BarConfigUpdateCallbacks;
+		EventCallback!(EventType.Binding)[] BindingCallbacks;
+
+		~this()
+		{ socket.close; }
+
+		@disable this(this);
+		void opAssign(State) { assert(false); }
+	}
+	alias StateRef = RefCounted!(State, RefCountedAutoInitialize.no);
+	StateRef state;
+
+	void connect(UnixAddress address)
+	{
+		if (state.address != address) state.address = address;
+		state.socket.connect(address);
+
+		if (state.WorkspaceCallbacks.length > 0) {
+			state.socket.sendMessage(RequestType.Subscribe, JSONValue("Workspace").toString);
+		}
+		if (state.OutputCallbacks.length > 0) {
+			state.socket.sendMessage(RequestType.Subscribe, JSONValue("Output").toString);
+		}
+		if (state.ModeCallbacks.length > 0) {
+			state.socket.sendMessage(RequestType.Subscribe, JSONValue("Mode").toString);
+		}
+		if (state.WindowCallbacks.length > 0) {
+			state.socket.sendMessage(RequestType.Subscribe, JSONValue("Window").toString);
+		}
+		if (state.BarConfigUpdateCallbacks.length > 0) {
+			state.socket.sendMessage(RequestType.Subscribe, JSONValue("BarConfigUpdate").toString);
+		}
+		if (state.BindingCallbacks.length > 0) {
+			state.socket.sendMessage(RequestType.Subscribe, JSONValue("Binding").toString);
+		}
 	}
 
-	static if (!is(T == void)) class EventListener : T
+public:
+    this(UnixAddress address)
 	{
-		this(Connection!T connection) {
-			super(&run);
+		auto socket = new Socket(AddressFamily.UNIX, SocketType.STREAM);
+		static if (is(Listener == Fiber)) socket.blocking = false;
+		state = StateRef(socket, new Mutex, address);
+		connect(state.address);
+		listener = new ListenerImpl(this);
+		static if (is(Listener == Thread)) listener.start;
+	}
+
+	static if (is(Listener == Fiber)) void dispatch()
+	{ listener.call; }
+
+	template subscribe(string event)
+	{
+		enum Event = to!EventType(event);
+		void subscribe(EventCallback!Event cb)
+		{ subscribe!Event(cb); }
+	}
+
+	void subscribe(EventType E)(EventCallback!E cb)
+	{
+		synchronized (state.mutex) {
+			if (0 == mixin("state.%sCallbacks.length".format(E))) {
+				state.socket.sendMessage(RequestType.Subscribe, JSONValue([E.toString]).toString);
+			}
+			mixin("state.%sCallbacks".format(E)) ~= cb;
+		}
+	}
+
+	static class ListenerImpl : Listener
+	{
+		alias Connection = EventConnection!Listener;
+		private Connection connection;
+
+		this(Connection connection)
+		{
 			this.connection = connection;
-			static if (is(T == Thread)) {
-				isDaemon = true;
+			super(&listen);
+		}
+
+		void listen()
+		{
+			static if (is(Listener == Thread)) isDaemon = true;
+
+			try while (true) {
+				try
+				{
+					auto header = connection.state.socket.receiveExactly!Header;
+					auto payload = parseJSON(connection.state.socket.receiveExactly(new ubyte[header.payloadSize]));
+
+					if (EventMask & header.rawType) handle(header, payload);
+					else if (header.responseType == ResponseType.Subscribe) {}
+					else assert(0);
+				}
+				catch (SocketException e) {
+					info(e);
+					warning("Lost connection to i3, trying to reestablish in approximately 10 milliseconds");
+					Thread.getThis.sleep(10.msecs);
+					connection.connect(connection.state.address);
+				}
+			}
+			catch (Exception e) {
+				error(e);
 			}
 		}
 
-	private:
-		Connection!T connection;
-
-		enum eventHandlers = [
-			EventType.Workspace : tuple(
-				q{
+		void handle(Header header, JSONValue payload)
+		{
+			switch (header.eventType) with(EventType)
+			{
+				case Workspace:
 					auto change = fromJSON!WorkspaceChange(payload["change"]);
 					auto current = Container(payload["current"]);
 					Nullable!Container old;
 					if (!payload["old"].isNull) old = Container(payload["old"]);
-				},
-				q{ cb(change, current, old); }
-			),
-			EventType.Output : tuple(
-				q{ auto change = fromJSON!OutputChange(payload["change"]); },
-				q{ cb(change); }
-			),
-			EventType.Mode : tuple(
-				q{
+
+					foreach (cb; connection.state.WorkspaceCallbacks) cb(change, current, old);
+					break;
+				case Output:
+					auto change = fromJSON!OutputChange(payload["change"]);
+
+					foreach (cb; connection.state.OutputCallbacks) cb(change);
+					break;
+				case Mode:
 					auto change = payload["change"].str;
 					auto pango_markup = JSON_TYPE.TRUE == payload["pango_markup"].type;
-				},
-				q{ cb(change, pango_markup); }
-			),
-			EventType.Window : tuple(
-				q{
+
+					foreach (cb; connection.state.ModeCallbacks) cb(change, pango_markup);
+					break;
+				case Window:
 					auto change = fromJSON!WindowChange(payload["change"]);
 					auto container = Container(payload["container"]);
-				},
-				q{ cb(change, container); }
-			),
-			EventType.BarConfigUpdate : tuple(
-				q{ auto barConfig = BarConfig(payload); },
-				q{ cb(barConfig); }
-			),
-			EventType.Binding : tuple(
-				q{
+
+					foreach (cb; connection.state.WindowCallbacks) cb(change, container);
+					break;
+				case BarConfigUpdate:
+					auto barConfig = BarConfig(payload);
+
+					foreach (cb; connection.state.BarConfigUpdateCallbacks) cb(barConfig);
+					break;
+				case Binding:
 					auto change = fromJSON!BindingChange(payload["change"]);
-					auto binding = fromJSON!Binding(payload["binding"]);
-				},
-				q{ cb(change, binding); }
-			)
-		];
+					auto binding = fromJSON!(i3ipc.data.Binding)(payload["binding"]);
 
-		void run()
-		{
-			try
-			{
-				while (true) {
-					auto header = connection.p.asyncSocket.receiveExactly!Header;
-					auto payload = parseJSON(connection.p.asyncSocket.receiveExactly(new ubyte[header.payloadSize]));
-
-					if (EventMask & header.rawType) switch (header.eventType) {
-						mixin(zip(eventHandlers.keys, eventHandlers.values).map!q{q{
-							case EventType.%1$s:
-								%2$s
-								%4$s
-								connection.p.callbacks%1$s.each!((cb) {
-									%3$s
-								});
-								break;
-							}.format(a[0], a[1][0], a[1][1], is(T == Thread) ? q{ synchronized (p.mutex) } : "")}.joiner.array);
-						default: assert(0);
-					} else switch (header.responseType) {
-						case ResponseType.Subscribe:
-							continue;
-						default: assert(0);
-					}
-				}
-			}
-			catch (SocketException e) {
-				if (connection.onClosed !is null) {
-					connection.onClosed();
-				}
+					foreach (cb; connection.state.BindingCallbacks) cb(change, binding);
+					break;
+				default: assert(0);
 			}
 		}
 	}
+}
+
+UnixAddress getSessionIPCAddress()
+{
+	auto result = execute(["i3", "--get-socketpath"]);
+	enforce(0 == result.status);
+	return new UnixAddress(result.output[0 .. $-1]);
 }
 
 template EventCallback(EventType T) if (T == EventType.Workspace)
@@ -245,15 +271,20 @@ import core.thread;
 import std.traits;
 import std.exception;
 
+import std.variant;
 import std.typecons;
 import std.range;
 import std.algorithm;
 import std.array;
 
+import std.conv;
 import std.format;
 import std.json;
+import std.experimental.logger;
 
+import std.process;
 import std.socket;
+import std.stdio;
 
 import i3ipc.protocol;
 import i3ipc.socket;

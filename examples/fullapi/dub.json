@@ -3,6 +3,7 @@
 	"description": "Shows usage of all available API methods",
 
 	"targetType": "executable",
+	"targetPath": "bin",
 
     "mainSourceFile": "fullapi.d",
 	"dependencies": {
